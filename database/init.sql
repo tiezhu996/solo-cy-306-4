@@ -113,6 +113,56 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 反馈问卷模块：一场活动至多一份问卷，每名已签到参加者仅可提交一次
+CREATE TABLE IF NOT EXISTS feedback_surveys (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  activity_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(200) NOT NULL DEFAULT '',
+  description TEXT,
+  status VARCHAR(20) NOT NULL DEFAULT 'draft',
+  creator_id BIGINT UNSIGNED NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_feedback_surveys_activity (activity_id),
+  KEY idx_feedback_surveys_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS feedback_questions (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  survey_id BIGINT UNSIGNED NOT NULL,
+  question_type VARCHAR(20) NOT NULL DEFAULT 'radio',
+  title VARCHAR(255) NOT NULL,
+  options JSON NOT NULL,
+  required TINYINT(1) NOT NULL DEFAULT 1,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_feedback_questions_survey (survey_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS feedback_responses (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  survey_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_feedback_response_survey_user (survey_id, user_id),
+  KEY idx_feedback_responses_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS feedback_answers (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  response_id BIGINT UNSIGNED NOT NULL,
+  question_id BIGINT UNSIGNED NOT NULL,
+  content TEXT,
+  `values` JSON NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_feedback_answers_response (response_id),
+  KEY idx_feedback_answers_question (question_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 预置种子数据（密码：admin/Admin@123，organizer 与 user/User@123）
 INSERT INTO users (id, username, password_hash, nickname, avatar, role, email, phone, created_at) VALUES
 (1, 'admin', '$2a$10$bFfMuQAuKWflKxpuDYdFpeGJPVgD83q/.278LHYLL5S0DDmEfChX2', '系统管理员', '', 'admin', 'admin@gbevent.dev', '13800000001', NOW(3)),
@@ -143,3 +193,26 @@ INSERT INTO favorites (id, user_id, activity_id, created_at) VALUES
 INSERT INTO notifications (id, user_id, notification_type, title, content, is_read, created_at) VALUES
 (1, 3, 'signup_success', '报名成功', '您已成功报名《Go 语言企业级开发实战讲座》', 0, NOW(3)),
 (2, 3, 'checkin_success', '签到成功', '您已在新员工安全培训中完成签到', 0, NOW(3));
+
+-- 已结束活动（活动 5）的示例反馈问卷与一条已签到用户提交
+INSERT INTO registrations (id, activity_id, user_id, name, phone, remark, voucher_no, status, review_status, created_at) VALUES
+(4, 5, 3, '张三', '13900000001', '', 'GB20260816000004', 'checked_in', 'approved', NOW(3));
+
+INSERT INTO check_in_records (id, registration_id, activity_id, check_in_method, check_in_time, operator_id, created_at) VALUES
+(2, 4, 5, 'voucher', NOW(), 2, NOW(3));
+
+INSERT INTO feedback_surveys (id, activity_id, title, description, status, creator_id, created_at, updated_at) VALUES
+(1, 5, '《上季度读书分享会》活动反馈问卷', '感谢您参加本次读书分享会，欢迎填写反馈帮助我们改进。', 'published', 2, NOW(3), NOW(3));
+
+INSERT INTO feedback_questions (id, survey_id, question_type, title, options, required, sort_order, created_at) VALUES
+(1, 1, 'radio', '您对本次活动的整体满意度？', JSON_ARRAY('非常满意', '满意', '一般', '不满意'), 1, 0, NOW(3)),
+(2, 1, 'checkbox', '您希望未来活动增加哪些环节？', JSON_ARRAY('互动讨论', '实操演练', '嘉宾分享', '茶歇交流'), 0, 1, NOW(3)),
+(3, 1, 'text', '您还有哪些意见或建议？', JSON_ARRAY(), 0, 2, NOW(3));
+
+INSERT INTO feedback_responses (id, survey_id, user_id, created_at) VALUES
+(1, 1, 3, NOW(3));
+
+INSERT INTO feedback_answers (id, response_id, question_id, content, `values`, created_at) VALUES
+(1, 1, 1, '', JSON_ARRAY('非常满意'), NOW(3)),
+(2, 1, 2, '', JSON_ARRAY('互动讨论', '茶歇交流'), NOW(3)),
+(3, 1, 3, '氛围很好，期待下一期！', JSON_ARRAY(), NOW(3));

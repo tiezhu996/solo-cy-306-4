@@ -23,4 +23,8 @@ const (
 	CodeCancelConflict     = 40906
 	CodeUploadTooLarge     = 41300
 	CodeUnsupportedType    = 41500
+	CodeSurveyExists       = 40907
+	CodeSurveyNotPublished = 40908
+	CodeSurveySubmitted    = 40909
+	CodeNotCheckedIn       = 40301
 )

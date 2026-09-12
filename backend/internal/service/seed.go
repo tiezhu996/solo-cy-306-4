@@ -49,6 +49,7 @@ func (s *SeedService) Seed() error {
 		{Title: "新员工安全培训", Description: "面向新入职员工的安全意识与应急处理培训。", ActivityType: constants.ActivityTypeTraining, StartTime: now.AddDate(0, 0, 14), EndTime: now.AddDate(0, 0, 14), Location: "A 座 3 楼培训室", Capacity: 50, SignupDeadline: now.AddDate(0, 0, 13), Status: constants.ActivityStatusPublished, OrganizerID: 2},
 		{Title: "秋季团队趣味运动会", Description: "团队协作趣味运动会，包含拔河、接力、跳绳等项目。", ActivityType: constants.ActivityTypeParty, StartTime: now.AddDate(0, 0, 30), EndTime: now.AddDate(0, 0, 30), Location: "城市体育公园", Capacity: 120, SignupDeadline: now.AddDate(0, 0, 28), Status: constants.ActivityStatusPublished, OrganizerID: 2},
 		{Title: "黑客松编程竞赛（草稿）", Description: "24 小时黑客松编程竞赛，暂未发布。", ActivityType: constants.ActivityTypeCompetition, StartTime: now.AddDate(0, 0, 60), EndTime: now.AddDate(0, 0, 62), Location: "创新中心", Capacity: 80, SignupDeadline: now.AddDate(0, 0, 55), Status: constants.ActivityStatusDraft, OrganizerID: 2},
+		{Title: "上季度读书分享会（已结束）", Description: "已结束的读书分享会。", ActivityType: constants.ActivityTypeLecture, StartTime: now.AddDate(0, 0, -10), EndTime: now.AddDate(0, 0, -10), Location: "咖啡厅", Capacity: 30, SignupDeadline: now.AddDate(0, 0, -11), Status: constants.ActivityStatusEnded, OrganizerID: 2},
 	}
 	for i := range activities {
 		if err := s.db.Create(&activities[i]).Error; err != nil {
@@ -59,9 +60,53 @@ func (s *SeedService) Seed() error {
 		{ActivityID: 1, UserID: 3, Name: "张三", Phone: "13900000001", VoucherNo: "GB20260816000001", Status: constants.RegistrationStatusRegistered, ReviewStatus: constants.ReviewStatusApproved},
 		{ActivityID: 2, UserID: 3, Name: "张三", Phone: "13900000001", VoucherNo: "GB20260816000002", Status: constants.RegistrationStatusCheckedIn, ReviewStatus: constants.ReviewStatusApproved},
 		{ActivityID: 3, UserID: 3, Name: "张三", Phone: "13900000001", VoucherNo: "GB20260816000003", Status: constants.RegistrationStatusRegistered, ReviewStatus: constants.ReviewStatusPending},
+		{ActivityID: 5, UserID: 3, Name: "张三", Phone: "13900000001", VoucherNo: "GB20260816000004", Status: constants.RegistrationStatusCheckedIn, ReviewStatus: constants.ReviewStatusApproved},
 	}
 	for i := range regs {
 		if err := s.db.Create(&regs[i]).Error; err != nil {
+			return err
+		}
+	}
+	checkins := []model.CheckInRecord{
+		{RegistrationID: 2, ActivityID: 2, CheckInMethod: constants.CheckInMethodVoucher, CheckInTime: now, OperatorID: 2},
+		{RegistrationID: 4, ActivityID: 5, CheckInMethod: constants.CheckInMethodVoucher, CheckInTime: now, OperatorID: 2},
+	}
+	for i := range checkins {
+		if err := s.db.Create(&checkins[i]).Error; err != nil {
+			return err
+		}
+	}
+	survey := model.FeedbackSurvey{
+		ActivityID:  5,
+		Title:       "《上季度读书分享会》活动反馈问卷",
+		Description: "感谢您参加本次读书分享会，欢迎填写反馈帮助我们改进。",
+		Status:      constants.FeedbackStatusPublished,
+		CreatorID:   2,
+	}
+	if err := s.db.Create(&survey).Error; err != nil {
+		return err
+	}
+	questions := []model.FeedbackQuestion{
+		{SurveyID: survey.ID, QuestionType: constants.FeedbackQuestionRadio, Title: "您对本次活动的整体满意度？", Options: model.StringList{"非常满意", "满意", "一般", "不满意"}, Required: true, SortOrder: 0},
+		{SurveyID: survey.ID, QuestionType: constants.FeedbackQuestionCheckbox, Title: "您希望未来活动增加哪些环节？", Options: model.StringList{"互动讨论", "实操演练", "嘉宾分享", "茶歇交流"}, Required: false, SortOrder: 1},
+		{SurveyID: survey.ID, QuestionType: constants.FeedbackQuestionText, Title: "您还有哪些意见或建议？", Options: model.StringList{}, Required: false, SortOrder: 2},
+	}
+	for i := range questions {
+		if err := s.db.Create(&questions[i]).Error; err != nil {
+			return err
+		}
+	}
+	response := model.FeedbackResponse{SurveyID: survey.ID, UserID: 3}
+	if err := s.db.Create(&response).Error; err != nil {
+		return err
+	}
+	answers := []model.FeedbackAnswer{
+		{ResponseID: response.ID, QuestionID: questions[0].ID, Values: model.StringList{"非常满意"}},
+		{ResponseID: response.ID, QuestionID: questions[1].ID, Values: model.StringList{"互动讨论", "茶歇交流"}},
+		{ResponseID: response.ID, QuestionID: questions[2].ID, Content: "氛围很好，期待下一期！", Values: model.StringList{}},
+	}
+	for i := range answers {
+		if err := s.db.Create(&answers[i]).Error; err != nil {
 			return err
 		}
 	}

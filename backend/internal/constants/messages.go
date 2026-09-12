@@ -31,4 +31,13 @@ const (
 	MsgActivityPublished   = "活动已发布"
 	MsgActivityEndedAction = "活动已结束"
 	MsgPasswordWeak        = "密码强度不足"
+
+	MsgSurveyExists       = "该活动已创建反馈问卷"
+	MsgSurveyActivityOpen = "活动尚未结束，暂不能创建反馈问卷"
+	MsgSurveyNotPublished = "问卷尚未发布"
+	MsgSurveyNone         = "该活动暂无反馈问卷"
+	MsgSurveySubmitted    = "您已提交过问卷，不能重复填写或修改"
+	MsgNotCheckedIn       = "仅已签到的参加者可以填写反馈问卷"
+	MsgSurveyPublish      = "问卷已发布"
+	MsgSurveySubmit       = "问卷提交成功"
 )

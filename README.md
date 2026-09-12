@@ -63,7 +63,7 @@ cy-306/
 │   ├── cmd/server/main.go
 │   └── internal/
 │       ├── config/                # 环境变量配置
-│       ├── model/                 # user/activity/registration/check_in_record/comment/favorite/notification/audit_log
+│       ├── model/                 # user/activity/registration/check_in_record/comment/favorite/notification/audit_log/feedback(survey/question/response/answer)
 │       ├── repository/            # 按实体分文件
 │       ├── service/               # 业务逻辑 + 种子数据 + 单元测试
 │       ├── handler/               # HTTP 处理器（含 upload_handler）
@@ -74,10 +74,10 @@ cy-306/
 │       └── util/                  # jwt/logger/formatters/app_error/voucher_generator/file_upload
 └── frontend/
     └── src/
-        ├── api/                   # user/activity/registration/checkIn/comment/favorite/notification
-        ├── stores/                # authStore/userStore/activityStore/registrationStore/commentStore/favoriteStore/notificationStore
+        ├── api/                   # user/activity/registration/checkIn/comment/favorite/notification/feedback
+        ├── stores/                # authStore/userStore/activityStore/registrationStore/commentStore/favoriteStore/notificationStore/feedbackStore
         ├── types/
-        ├── components/common/     # ActivityCard/ActivityCalendar/ActivityFilter/SignupForm/CommentList/RatingStars/ActivityForm/RegistrationTable/CheckInQrCode/CheckInPanel/MyRegistrations/FavoriteList/NotificationList/ImageUploader/EmptyState/RoleGuard
+        ├── components/common/     # ActivityCard/ActivityCalendar/ActivityFilter/SignupForm/CommentList/RatingStars/ActivityForm/RegistrationTable/CheckInQrCode/CheckInPanel/MyRegistrations/FavoriteList/NotificationList/ImageUploader/EmptyState/RoleGuard/FeedbackPanel/FeedbackFormEditor/FeedbackStats/FeedbackManageDialog
         ├── hooks/                 # useAuth/useActivityStats/useCheckIn
         ├── pages/                 # Calendar/Activities/ActivityDetail/OrganizerActivities/OrganizerRegistrations/Profile/Login/Register
         ├── router/                # index.ts + guards.ts
@@ -166,6 +166,11 @@ cy-306/
 | GET | /api/v1/notifications/mine | 我的通知 |
 | POST | /api/v1/notifications/:id/read | 标记单条已读 |
 | POST | /api/v1/notifications/read-all | 全部标记已读 |
+| GET | /api/v1/activities/:id/feedback | 查看已发布问卷及本人提交状态（登录） |
+| POST | /api/v1/activities/:id/feedback | 为已结束活动创建问卷（组织者/管理员） |
+| POST | /api/v1/activities/:id/feedback/publish | 发布问卷（组织者/管理员） |
+| POST | /api/v1/activities/:id/feedback/submit | 已签到参加者提交问卷（每人一次，不可修改） |
+| GET | /api/v1/activities/:id/feedback/stats | 问卷填写人数与每题统计（组织者/管理员） |
 
 ## 主要功能
 
@@ -175,6 +180,7 @@ cy-306/
 - 活动日历：月历视图展示活动分布，日期格子显示活动数量，点击日期展开当天活动。
 - 评论收藏：评分评论、平均分展示、收藏与取消收藏。
 - 消息通知：报名成功、审核结果、签到成功自动通知。
+- 反馈问卷：组织者可为已结束活动创建单选/多选/文本题问卷，发布后已签到参加者每人可填写一次且不可修改；组织者可查看填写人数、每题选项统计（进度条）与全部文本回答。
 - 角色权限：JWT + RBAC（user/organizer/admin），操作审计日志。
 
 ## License

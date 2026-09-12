@@ -34,6 +34,7 @@ func main() {
 	if err := db.AutoMigrate(
 		&model.User{}, &model.Activity{}, &model.Registration{}, &model.CheckInRecord{},
 		&model.Comment{}, &model.Favorite{}, &model.Notification{}, &model.AuditLog{},
+		&model.FeedbackSurvey{}, &model.FeedbackQuestion{}, &model.FeedbackResponse{}, &model.FeedbackAnswer{},
 	); err != nil {
 		logger.Error("auto migrate failed", "error", err.Error())
 		os.Exit(1)
@@ -50,6 +51,7 @@ func main() {
 	commentRepo := repository.NewCommentRepository(db)
 	favoriteRepo := repository.NewFavoriteRepository(db)
 	notifyRepo := repository.NewNotificationRepository(db)
+	feedbackRepo := repository.NewFeedbackRepository(db)
 
 	userSvc := service.NewUserService(userRepo, logger)
 	activitySvc := service.NewActivityService(activityRepo, regRepo, notifyRepo, checkinRepo, logger)
@@ -58,6 +60,7 @@ func main() {
 	commentSvc := service.NewCommentService(commentRepo, activitySvc, logger)
 	favoriteSvc := service.NewFavoriteService(favoriteRepo, activitySvc, logger)
 	notifySvc := service.NewNotificationService(notifyRepo, logger)
+	feedbackSvc := service.NewFeedbackService(db, feedbackRepo, activitySvc, regRepo, logger)
 
 	userHandler := handler.NewUserHandler(userSvc, logger)
 	activityHandler := handler.NewActivityHandler(activitySvc, logger)
@@ -66,10 +69,11 @@ func main() {
 	commentHandler := handler.NewCommentHandler(commentSvc, logger)
 	favoriteHandler := handler.NewFavoriteHandler(favoriteSvc, logger)
 	notifyHandler := handler.NewNotificationHandler(notifySvc, logger)
+	feedbackHandler := handler.NewFeedbackHandler(feedbackSvc, logger)
 	uploadHandler := handler.NewUploadHandler(cfg, logger)
 
 	r := router.New(cfg, db, logger, userHandler, activityHandler, regHandler, checkinHandler,
-		commentHandler, favoriteHandler, notifyHandler, uploadHandler)
+		commentHandler, favoriteHandler, notifyHandler, feedbackHandler, uploadHandler)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.ServerPort,

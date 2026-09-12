@@ -25,6 +25,7 @@ type Router struct {
 	comment      *handler.CommentHandler
 	favorite     *handler.FavoriteHandler
 	notification *handler.NotificationHandler
+	feedback     *handler.FeedbackHandler
 	upload       *handler.UploadHandler
 }
 
@@ -33,7 +34,8 @@ func New(cfg *config.Config, db *gorm.DB, logger *slog.Logger,
 	user *handler.UserHandler, activity *handler.ActivityHandler,
 	registration *handler.RegistrationHandler, checkIn *handler.CheckInRecordHandler,
 	comment *handler.CommentHandler, favorite *handler.FavoriteHandler,
-	notification *handler.NotificationHandler, upload *handler.UploadHandler) *Router {
+	notification *handler.NotificationHandler, feedback *handler.FeedbackHandler,
+	upload *handler.UploadHandler) *Router {
 	return &Router{
 		cfg: cfg, db: db, logger: logger,
 		limiter:      middleware.NewRateLimiter(cfg.RateLimitPerMinute),
@@ -44,6 +46,7 @@ func New(cfg *config.Config, db *gorm.DB, logger *slog.Logger,
 		comment:      comment,
 		favorite:     favorite,
 		notification: notification,
+		feedback:     feedback,
 		upload:       upload,
 	}
 }
@@ -74,6 +77,7 @@ func (r *Router) Setup() *gin.Engine {
 	r.registerCommentRoutes(v1)
 	r.registerFavoriteRoutes(v1)
 	r.registerNotificationRoutes(v1)
+	r.registerFeedbackRoutes(v1)
 	return engine
 }
 

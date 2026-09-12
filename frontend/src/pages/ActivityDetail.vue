@@ -32,6 +32,9 @@
           </el-form>
           <CommentList :activity-id="activity.id" />
         </el-tab-pane>
+        <el-tab-pane v-if="activity.status === 'ended'" label="反馈问卷">
+          <FeedbackPanel :activity-id="activity.id" />
+        </el-tab-pane>
       </el-tabs>
 
       <el-button class="fav" :type="favorited ? 'warning' : 'default'" @click="toggleFavorite">
@@ -47,6 +50,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import SignupForm from '@/components/common/SignupForm.vue'
 import CommentList from '@/components/common/CommentList.vue'
+import FeedbackPanel from '@/components/common/FeedbackPanel.vue'
 import { useActivityStore } from '@/stores/activityStore'
 import { useCommentStore } from '@/stores/commentStore'
 import { useAuth } from '@/hooks/useAuth'

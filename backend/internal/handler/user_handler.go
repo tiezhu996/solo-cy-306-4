@@ -116,12 +116,13 @@ func appErrorStatus(code int) int {
 	switch code {
 	case constants.CodeUnauthorized, constants.CodeInvalidCredentials:
 		return http.StatusUnauthorized
-	case constants.CodeForbidden:
+	case constants.CodeForbidden, constants.CodeNotCheckedIn:
 		return http.StatusForbidden
 	case constants.CodeNotFound, constants.CodeUserNotFound, constants.CodeInvalidVoucher:
 		return http.StatusNotFound
 	case constants.CodeConflict, constants.CodeActivityFull, constants.CodeDuplicateSignup,
-		constants.CodeAlreadyCheckedIn, constants.CodeReviewConflict, constants.CodeCancelConflict:
+		constants.CodeAlreadyCheckedIn, constants.CodeReviewConflict, constants.CodeCancelConflict,
+		constants.CodeSurveyExists, constants.CodeSurveyNotPublished, constants.CodeSurveySubmitted:
 		return http.StatusConflict
 	case constants.CodeValidationFailed:
 		return http.StatusUnprocessableEntity

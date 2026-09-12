@@ -25,16 +25,19 @@
         </template>
       </el-table-column>
       <el-table-column prop="location" label="地点" min-width="140" />
-      <el-table-column label="操作" min-width="260">
+      <el-table-column label="操作" min-width="340">
         <template #default="{ row }">
           <el-button size="small" @click="edit(row)">编辑</el-button>
           <el-button v-if="row.status === 'draft'" size="small" type="success" @click="publish(row)">发布</el-button>
           <el-button v-if="row.status === 'published'" size="small" type="warning" @click="end(row)">结束</el-button>
+          <el-button v-if="row.status === 'ended'" size="small" type="primary" @click="manageFeedback(row)">反馈问卷</el-button>
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
     <el-pagination class="mt-2" layout="total, prev, pager, next" :total="store.total" :page-size="pageSize" :current-page="page" @current-change="onPage" />
+
+    <FeedbackManageDialog v-model="feedbackDialogVisible" :activity-id="feedbackActivityId" />
   </div>
 </template>
 
@@ -42,6 +45,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ActivityForm from '@/components/common/ActivityForm.vue'
+import FeedbackManageDialog from '@/components/common/FeedbackManageDialog.vue'
 import { useActivityStore } from '@/stores/activityStore'
 import { publishActivity, endActivity, deleteActivity } from '@/api/activity'
 import { ActivityStatusOptions, ActivityStatusText, ActivityTypeText } from '@/constants/activity'
@@ -54,6 +58,8 @@ const pageSize = 10
 const statusFilter = ref('')
 const dialogVisible = ref(false)
 const editing = ref<Activity | null>(null)
+const feedbackDialogVisible = ref(false)
+const feedbackActivityId = ref(0)
 
 async function load() {
   loading.value = true
@@ -100,6 +106,10 @@ async function remove(row: Activity) {
 function onPage(p: number) {
   page.value = p
   load()
+}
+function manageFeedback(row: Activity) {
+  feedbackActivityId.value = row.id
+  feedbackDialogVisible.value = true
 }
 onMounted(load)
 </script>
