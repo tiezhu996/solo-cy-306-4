@@ -75,13 +75,15 @@ type FeedbackSurvey struct {
 func (FeedbackSurvey) TableName() string { return "feedback_surveys" }
 
 // FeedbackQuestion 问卷题目实体。
+// 注意：Required 不使用 GORM default 标签——零值 false 若带 default:true 会被 GORM
+// 省略并回落到数据库默认值，导致“非必答”题目被错误存为必答；默认值仅在 init.sql 中声明。
 type FeedbackQuestion struct {
 	ID           uint64     `gorm:"primaryKey;autoIncrement" json:"id"`
 	SurveyID     uint64     `gorm:"not null;index" json:"survey_id"`
 	QuestionType string     `gorm:"size:20;not null;default:radio" json:"question_type"`
 	Title        string     `gorm:"size:255;not null" json:"title"`
 	Options      StringList `gorm:"type:json" json:"options"`
-	Required     bool       `gorm:"not null;default:true" json:"required"`
+	Required     bool       `gorm:"not null" json:"required"`
 	SortOrder    int        `gorm:"not null;default:0" json:"sort_order"`
 	CreatedAt    time.Time  `json:"created_at"`
 }

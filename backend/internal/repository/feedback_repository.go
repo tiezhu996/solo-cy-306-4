@@ -3,12 +3,25 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"gbevent/internal/model"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// isDuplicateKeyErr 识别唯一索引冲突（MySQL 1062 / SQLite UNIQUE / GORM 翻译错误）。
+func isDuplicateKeyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate entry") || strings.Contains(msg, "unique constraint failed")
+}
 
 // FeedbackRepository 反馈问卷仓储（问卷/题目/提交/回答同库管理）。
 type FeedbackRepository struct {
@@ -115,6 +128,9 @@ func (r *FeedbackRepository) FindResponseForUpdateTx(tx *gorm.DB, surveyID, user
 // CreateResponseTx 事务内创建提交。
 func (r *FeedbackRepository) CreateResponseTx(tx *gorm.DB, resp *model.FeedbackResponse) error {
 	if err := tx.Create(resp).Error; err != nil {
+		if isDuplicateKeyErr(err) {
+			return fmt.Errorf("create feedback response: %w: %v", ErrDuplicate, err)
+		}
 		return fmt.Errorf("create feedback response: %w", err)
 	}
 	return nil

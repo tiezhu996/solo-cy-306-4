@@ -42,6 +42,33 @@ cd frontend && npm install && npm run dev
 
 前端开发服务器通过 Vite 代理将 `/api` 转发到 `http://localhost:19506`。
 
+## 自动化测试
+
+测试使用纯 Go 的 SQLite 驱动（`github.com/glebarez/sqlite`，无 cgo 依赖），每个用例在临时目录中创建独立数据库，**无需 MySQL/Docker，可重复运行**：
+
+```bash
+cd backend
+CGO_ENABLED=0 go test ./...                              # 全量测试
+CGO_ENABLED=0 go test ./internal/service/ -run TestFeedback -v   # 问卷服务层用例
+CGO_ENABLED=0 go test ./internal/router/ -v              # HTTP 全链路（含报名/签到回归）
+CGO_ENABLED=0 go test ./internal/service/ -run TestFeedbackConcurrentSubmit -count=10  # 并发重复提交压测
+```
+
+反馈问卷测试覆盖（`internal/service/feedback_test.go`、`internal/router/feedback_test.go`）：
+
+| 用例 | 断言 |
+| --- | --- |
+| TestFeedbackCreateOnlyEndedActivity | 仅 `ended` 活动可创建问卷，进行中返回 CodeConflict(40900) |
+| TestFeedbackCreatePermission / Duplicate | 非组织者 403；管理员可创建；重复创建返回 CodeSurveyExists(40907) |
+| TestFeedbackPublishRules | 草稿对参加者不可见；只能发布一次，重复发布 409 |
+| TestFeedbackSubmitRequiresCheckedIn / DraftRejected | 未报名、已报名未签到均返回 CodeNotCheckedIn(40301)；草稿不可提交 |
+| TestFeedbackSubmitOnce | 每人仅一次，重复提交返回 CodeSurveySubmitted(40909)，库中仅 1 条记录且首次答案不被篡改 |
+| TestFeedbackAnswerValidation | 必答缺失、单选多选/非法选项、多选重复项、题目不存在、同题重复作答均 422 且不落库；非必答可留空 |
+| TestFeedbackStatsAggregation | 填写人数、单选/多选选项计数、文本题回答列表与已答人数正确 |
+| TestFeedbackConcurrentSubmit | 16 并发提交恰好 1 成功，其余 40909，`feedback_responses` 仅 1 行 |
+| TestFeedbackPersistenceAcrossConnections | 关闭重连数据库后问卷、提交、统计仍在，重复提交仍被拒绝 |
+| TestExistingSignupAndCheckInFlow | 报名→防重复报名→凭证签到→防重复签到→状态变更/通知/评论的原有流程回归 |
+
 ## 技术栈
 
 | 层 | 技术 |

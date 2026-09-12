@@ -188,6 +188,10 @@ func (s *FeedbackService) Submit(activityID, userID uint64, req dto.FeedbackSubm
 		}
 		resp = &model.FeedbackResponse{SurveyID: survey.ID, UserID: userID}
 		if err := s.repo.CreateResponseTx(tx, resp); err != nil {
+			if errors.Is(err, repository.ErrDuplicate) {
+				// 唯一索引兜底：并发提交时只有一条能写入
+				return util.NewAppError(constants.CodeSurveySubmitted, constants.MsgSurveySubmitted)
+			}
 			s.logger.Error(constants.LogFeedbackSurveySubmitFailed, "error", err)
 			return util.Wrap(err, "FeedbackSurvey[id=%d] submit create response failed", survey.ID)
 		}
