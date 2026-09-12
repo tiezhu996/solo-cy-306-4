@@ -51,7 +51,8 @@ cd backend
 CGO_ENABLED=0 go test ./...                              # 全量测试
 CGO_ENABLED=0 go test ./internal/service/ -run TestFeedback -v   # 问卷服务层用例
 CGO_ENABLED=0 go test ./internal/router/ -v              # HTTP 全链路（含报名/签到回归）
-CGO_ENABLED=0 go test ./internal/service/ -run TestFeedbackConcurrentSubmit -count=10  # 并发重复提交压测
+CGO_ENABLED=0 go test ./internal/service/ -run TestFeedbackConcurrentSubmit -count=20  # 真实多连接并发，重复 20 轮
+CGO_ENABLED=0 go test ./internal/router/ -run TestFeedbackHTTPConcurrentSubmit -count=20
 ```
 
 反馈问卷测试覆盖（`internal/service/feedback_test.go`、`internal/router/feedback_test.go`）：
@@ -65,7 +66,8 @@ CGO_ENABLED=0 go test ./internal/service/ -run TestFeedbackConcurrentSubmit -cou
 | TestFeedbackSubmitOnce | 每人仅一次，重复提交返回 CodeSurveySubmitted(40909)，库中仅 1 条记录且首次答案不被篡改 |
 | TestFeedbackAnswerValidation | 必答缺失、单选多选/非法选项、多选重复项、题目不存在、同题重复作答均 422 且不落库；非必答可留空 |
 | TestFeedbackStatsAggregation | 填写人数、单选/多选选项计数、文本题回答列表与已答人数正确 |
-| TestFeedbackConcurrentSubmit | 16 并发提交恰好 1 成功，其余 40909，`feedback_responses` 仅 1 行 |
+| TestFeedbackConcurrentSubmit | **真实多连接**并发：16 个请求各自使用独立 GORM 实例/物理连接同时提交，恰好 1 成功、其余 40909，`feedback_responses` 仅 1 行、`feedback_answers` 仅一组 |
+| TestFeedbackHTTPConcurrentSubmit | 经真实 Gin 路由并发 16 个独立 HTTP 请求提交（连接池分配独立连接），同样仅 1 成功 |
 | TestFeedbackPersistenceAcrossConnections | 关闭重连数据库后问卷、提交、统计仍在，重复提交仍被拒绝 |
 | TestExistingSignupAndCheckInFlow | 报名→防重复报名→凭证签到→防重复签到→状态变更/通知/评论的原有流程回归 |
 

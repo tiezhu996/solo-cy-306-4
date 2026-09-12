@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,12 +42,17 @@ type httpEnv struct {
 
 func setupHTTPEnv(t *testing.T) *httpEnv {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "http.db")), &gorm.Config{})
+	// WAL + busy_timeout + BEGIN IMMEDIATE：支持多个并发 HTTP 请求持有独立物理连接，
+	// 写事务在数据库层排队，输家走“已存在提交 → 重复冲突”路径（等价 MySQL FOR UPDATE）。
+	dsn := "file:" + filepath.Join(t.TempDir(), "http.db") +
+		"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	sqlDB, _ := db.DB()
-	sqlDB.SetMaxOpenConns(1)
+	// 允许连接池持有多条物理连接，使并发请求真正落在独立连接上。
+	sqlDB.SetMaxOpenConns(0)
 	if err := db.AutoMigrate(
 		&model.User{}, &model.Activity{}, &model.Registration{}, &model.CheckInRecord{},
 		&model.Comment{}, &model.Favorite{}, &model.Notification{}, &model.AuditLog{},
@@ -303,5 +309,97 @@ func TestFeedbackHTTPEndToEnd(t *testing.T) {
 	status, _ = env.do(http.MethodGet, "/api/v1/activities/1/feedback/stats", attendeeTok, nil)
 	if status != http.StatusForbidden {
 		t.Fatalf("步骤6 普通用户不能看统计, got %d", status)
+	}
+}
+
+// TestFeedbackHTTPConcurrentSubmit 通过真实 Gin 路由并发提交同一问卷：
+// 每个请求是独立 httptest 请求，从连接池获得独立物理连接（WAL + BEGIN IMMEDIATE）。
+// 预期：恰好 1 个请求 200/CodeOK，其余全部 409/CodeSurveySubmitted；
+// feedback_responses 仅 1 行、feedback_answers 仅一组。
+func TestFeedbackHTTPConcurrentSubmit(t *testing.T) {
+	env := setupHTTPEnv(t)
+	orgTok := env.token(1, "org", constants.RoleOrganizer)
+	attendeeTok := env.token(2, "attendee", constants.RoleUser)
+
+	createBody := map[string]any{
+		"title": "并发问卷",
+		"questions": []map[string]any{
+			{"question_type": "radio", "title": "满意度", "options": []string{"满意", "不满意"}, "required": true},
+			{"question_type": "text", "title": "建议", "required": false},
+		},
+	}
+	if status, out := env.do(http.MethodPost, "/api/v1/activities/1/feedback", orgTok, createBody); status != http.StatusOK {
+		t.Fatalf("创建问卷失败: %d %v", status, out)
+	}
+	if status, _ := env.do(http.MethodPost, "/api/v1/activities/1/feedback/publish", orgTok, nil); status != http.StatusOK {
+		t.Fatalf("发布失败: %d", status)
+	}
+	_, detail := env.do(http.MethodGet, "/api/v1/activities/1/feedback", attendeeTok, nil)
+	questions := detail["data"].(map[string]any)["questions"].([]any)
+	qID := func(i int) uint64 { return uint64(questions[i].(map[string]any)["id"].(float64)) }
+	submitBody := map[string]any{"answers": []map[string]any{
+		{"question_id": qID(0), "values": []string{"满意"}},
+		{"question_id": qID(1), "content": "很好"},
+	}}
+
+	const n = 16
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	success, conflict, other := 0, 0, 0
+	statuses := map[int]int{}
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b, _ := json.Marshal(submitBody)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/activities/1/feedback/submit", bytes.NewReader(b))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+attendeeTok)
+			<-start // 栅栏：真正同时发起
+			rec := httptest.NewRecorder()
+			env.engine.ServeHTTP(rec, req)
+			var out map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &out)
+			mu.Lock()
+			defer mu.Unlock()
+			code := bodyCode(out)
+			statuses[rec.Code]++
+			switch {
+			case rec.Code == http.StatusOK && code == constants.CodeOK:
+				success++
+			case rec.Code == http.StatusConflict && code == constants.CodeSurveySubmitted:
+				conflict++
+			default:
+				other++
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if other != 0 {
+		t.Fatalf("并发提交不应出现锁/其他错误, other=%d http状态分布=%v", other, statuses)
+	}
+	if success != 1 {
+		t.Fatalf("应恰好 1 个请求成功, got %d (conflict=%d, http状态=%v)", success, conflict, statuses)
+	}
+	if conflict != n-1 {
+		t.Fatalf("其余 %d 个请求应 409 重复冲突, got %d (http状态=%v)", n-1, conflict, statuses)
+	}
+
+	var respCount int64
+	if err := env.db.Model(&model.FeedbackResponse{}).Count(&respCount).Error; err != nil {
+		t.Fatalf("count responses: %v", err)
+	}
+	if respCount != 1 {
+		t.Fatalf("feedback_responses 必须仅 1 行, got %d", respCount)
+	}
+	var answerCount int64
+	if err := env.db.Model(&model.FeedbackAnswer{}).Count(&answerCount).Error; err != nil {
+		t.Fatalf("count answers: %v", err)
+	}
+	if answerCount != 2 {
+		t.Fatalf("feedback_answers 应仅一组 2 行, got %d", answerCount)
 	}
 }

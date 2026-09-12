@@ -5,12 +5,16 @@ package service
 // 运行方式：
 //
 //	cd backend && CGO_ENABLED=0 go test ./internal/service/ -run 'TestFeedback' -v
-//	cd backend && CGO_ENABLED=0 go test ./internal/service/ -run 'TestFeedbackConcurrentSubmit' -race -count=5
+//	cd backend && CGO_ENABLED=0 go test ./internal/service/ -run 'TestFeedbackConcurrentSubmit' -count=20
+//	cd backend && CGO_ENABLED=0 go test ./internal/router/ -v
 //
-// 每个用例使用 t.TempDir() 中的独立数据库文件，重复运行互不影响。
+// 每个用例在 t.TempDir() 中创建独立数据库，重复运行互不影响。
+// 并发用例为“真实多连接”：每个并发请求使用独立的 GORM 实例/连接池（独立物理连接），
+// 数据库以 WAL + busy_timeout 打开，事务经 BEGIN IMMEDIATE 排队（与 MySQL 的 FOR UPDATE 等价）。
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -51,17 +55,25 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// openFeedbackTestDB 打开独立 sqlite 数据库：MaxOpenConns(1) 使 sqlite 写事务串行，
-// 既符合并发测试预期，也能真正触发唯一索引兜底。
+// sqliteWALDSN 返回支持真实多连接并发写的 sqlite DSN：
+//   - WAL：读写不互斥，允许各请求使用独立连接；
+//   - busy_timeout：写锁冲突时排队等待而非立即返回 SQLITE_BUSY；
+//   - _txlock=immediate：事务以 BEGIN IMMEDIATE 开始（等价 MySQL 的行锁排队），
+//     避免“先读后升级写锁”导致的 SQLITE_BUSY_SNAPSHOT。
+func sqliteWALDSN(path string) string {
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_txlock=immediate", path)
+}
+
+// openFeedbackTestDB 打开独立测试数据库（WAL，单连接池）。
 func openFeedbackTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	return openFeedbackDBAt(t, filepath.Join(t.TempDir(), "test.db"))
 }
 
-// openFeedbackDBAt 打开指定路径的 sqlite 数据库（用于跨连接持久化测试）。
+// openFeedbackDBAt 打开/建表指定路径的 sqlite 数据库（用于跨连接持久化与并发测试）。
 func openFeedbackDBAt(t *testing.T, dsn string) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(sqliteWALDSN(dsn)), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -75,6 +87,31 @@ func openFeedbackDBAt(t *testing.T, dsn string) *gorm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 	return db
+}
+
+// openFeedbackWorkerDB 为并发请求打开一个【独立物理连接】（独立 GORM 实例 + 单连接池），
+// 不重复建表。这是本测试“每个请求使用独立数据库连接”的关键。
+func openFeedbackWorkerDB(t *testing.T, path string) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(sqliteWALDSN(path)), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open worker db: %v", err)
+	}
+	sqlDB, _ := db.DB()
+	sqlDB.SetMaxOpenConns(1)
+	return db
+}
+
+// feedbackServiceFromDB 基于已有数据库构造问卷服务。
+func feedbackServiceFromDB(db *gorm.DB) *FeedbackService {
+	logger := discardLogger()
+	actRepo := repository.NewActivityRepository(db)
+	regRepo := repository.NewRegistrationRepository(db)
+	notifyRepo := repository.NewNotificationRepository(db)
+	checkinRepo := repository.NewCheckInRecordRepository(db)
+	fbRepo := repository.NewFeedbackRepository(db)
+	actSvc := NewActivityService(actRepo, regRepo, notifyRepo, checkinRepo, logger)
+	return NewFeedbackService(db, fbRepo, actSvc, regRepo, logger)
 }
 
 // seedFeedbackData 写入用户、活动与报名夹具。
@@ -118,14 +155,17 @@ func newFeedbackHarness(t *testing.T) *feedbackHarness {
 	t.Helper()
 	db := openFeedbackTestDB(t)
 	seedFeedbackData(t, db)
-	logger := discardLogger()
-	actRepo := repository.NewActivityRepository(db)
-	regRepo := repository.NewRegistrationRepository(db)
-	notifyRepo := repository.NewNotificationRepository(db)
-	checkinRepo := repository.NewCheckInRecordRepository(db)
-	fbRepo := repository.NewFeedbackRepository(db)
-	actSvc := NewActivityService(actRepo, regRepo, notifyRepo, checkinRepo, logger)
-	return &feedbackHarness{db: db, svc: NewFeedbackService(db, fbRepo, actSvc, regRepo, logger)}
+	return &feedbackHarness{db: db, svc: feedbackServiceFromDB(db)}
+}
+
+// newFeedbackHarnessAtPath 在指定数据库文件上播种并构造服务（共享同一份数据，供并发/持久化测试）。
+func newFeedbackHarnessAtPath(t *testing.T, path string, seed bool) *feedbackHarness {
+	t.Helper()
+	db := openFeedbackDBAt(t, path)
+	if seed {
+		seedFeedbackData(t, db)
+	}
+	return &feedbackHarness{db: db, svc: feedbackServiceFromDB(db)}
 }
 
 // validSurveyRequest 构造合法的三题问卷（单选/多选/文本）。
@@ -580,54 +620,79 @@ func TestFeedbackStatsAggregation(t *testing.T) {
 	}
 }
 
-// ---- 用例 7：并发提交不产生重复记录 ----
+// ---- 用例 7：真实多连接并发提交，只有一条成功、其余重复冲突，库中仅一组数据 ----
 
 func TestFeedbackConcurrentSubmit(t *testing.T) {
-	// 步骤：同一已签到用户对同一问卷并发提交 16 次。
-	// 预期：恰好 1 次成功，其余全部 CodeSurveySubmitted；feedback_responses 仅 1 行。
-	h := newFeedbackHarness(t)
+	// 复现步骤：
+	//  1. 在共享数据库上创建并发布问卷（提交者为已签到用户 fxCheckedID）。
+	//  2. 启动 16 个 goroutine，每个 goroutine 使用【独立 GORM 实例与独立物理连接】
+	//     （openFeedbackWorkerDB）同时提交同一份问卷，模拟 16 个独立 HTTP 请求。
+	//  3. 通过 channel 栅栏保证它们真正同时开始竞争。
+	//
+	// 预期（事务 BEGIN IMMEDIATE 排队 + (survey_id,user_id) 唯一索引双重保证）：
+	//  恰好 1 次成功，其余 15 次返回 CodeSurveySubmitted(40909)；
+	//  feedback_responses 仅 1 行，feedback_answers 仅一组（3 行），无 SQLITE_BUSY 等基础设施错误。
+	const n = 16
+	path := filepath.Join(t.TempDir(), "concurrent.db")
+	h := newFeedbackHarnessAtPath(t, path, true)
 	detail := createPublishedSurvey(t, h, fxEndedActivityID)
 	req := validAnswers(detail)
 
-	const n = 16
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	success, dup, other := 0, 0, 0
+	type result struct {
+		code int
+		err  error
+	}
 	start := make(chan struct{})
+	results := make(chan result, n)
+	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			<-start
-			_, err := h.svc.Submit(fxEndedActivityID, fxCheckedID, req)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case err == nil:
-				success++
-			case appCodeQuiet(err) == constants.CodeSurveySubmitted:
-				dup++
-			default:
-				other++
-				t.Errorf("意外错误: %v", err)
-			}
+			// 每个请求独立连接：独立 GORM 实例/连接池/物理连接，不共享 *gorm.DB。
+			workerDB := openFeedbackWorkerDB(t, path)
+			defer func() { sqlDB, _ := workerDB.DB(); _ = sqlDB.Close() }()
+			svc := feedbackServiceFromDB(workerDB)
+			<-start // 栅栏：所有 goroutine 就绪后同时发起
+			_, err := svc.Submit(fxEndedActivityID, fxCheckedID, req)
+			results <- result{code: appCodeQuiet(err), err: err}
 		}()
 	}
 	close(start)
 	wg.Wait()
+	close(results)
 
+	success, dup, other := 0, 0, 0
+	var otherErrs []string
+	for r := range results {
+		switch {
+		case r.err == nil:
+			success++
+		case r.code == constants.CodeSurveySubmitted:
+			dup++
+		default:
+			other++
+			otherErrs = append(otherErrs, r.err.Error())
+		}
+	}
+	if other != 0 {
+		t.Fatalf("并发提交不应出现锁/基础设施错误, got %d: %v", other, otherErrs)
+	}
 	if success != 1 {
 		t.Fatalf("并发提交应恰好 1 次成功, got %d (dup=%d other=%d)", success, dup, other)
 	}
 	if dup != n-1 {
 		t.Fatalf("其余 %d 次应返回重复提交, got dup=%d other=%d", n-1, dup, other)
 	}
-	var count int64
-	if err := h.db.Model(&model.FeedbackResponse{}).Where("survey_id = ? AND user_id = ?", detail.Survey.ID, fxCheckedID).Count(&count).Error; err != nil {
-		t.Fatalf("count: %v", err)
+
+	// 数据库层断言：只有一条提交、一组回答。
+	var respCount int64
+	if err := h.db.Model(&model.FeedbackResponse{}).
+		Where("survey_id = ? AND user_id = ?", detail.Survey.ID, fxCheckedID).Count(&respCount).Error; err != nil {
+		t.Fatalf("count responses: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("数据库中提交记录必须为 1 行, got %d", count)
+	if respCount != 1 {
+		t.Fatalf("feedback_responses 必须仅 1 行, got %d", respCount)
 	}
 	var answerCount int64
 	if err := h.db.Table("feedback_answers AS a").
@@ -637,7 +702,7 @@ func TestFeedbackConcurrentSubmit(t *testing.T) {
 		t.Fatalf("count answers: %v", err)
 	}
 	if answerCount != int64(len(req.Answers)) {
-		t.Fatalf("回答行数应为 %d, got %d", len(req.Answers), answerCount)
+		t.Fatalf("feedback_answers 应仅有一组 %d 行, got %d", len(req.Answers), answerCount)
 	}
 }
 
@@ -646,29 +711,20 @@ func TestFeedbackConcurrentSubmit(t *testing.T) {
 func TestFeedbackPersistenceAcrossConnections(t *testing.T) {
 	// 步骤：创建并发布问卷、完成提交后关闭连接；重新打开同一数据库文件，
 	// 新建服务实例（模拟服务重启 + 用户刷新/重新登录），问卷、提交与统计仍完整可查。
-	dbPath := filepath.Join(t.TempDir(), "persist.db")
-	db := openFeedbackDBAt(t, dbPath)
-	seedFeedbackData(t, db)
-	logger := discardLogger()
-	actRepo := repository.NewActivityRepository(db)
-	regRepo := repository.NewRegistrationRepository(db)
-	fbRepo := repository.NewFeedbackRepository(db)
-	notifyRepo := repository.NewNotificationRepository(db)
-	checkinRepo := repository.NewCheckInRecordRepository(db)
-	actSvc := NewActivityService(actRepo, regRepo, notifyRepo, checkinRepo, logger)
-	h1 := &feedbackHarness{db: db, svc: NewFeedbackService(db, fbRepo, actSvc, regRepo, logger)}
+	path := filepath.Join(t.TempDir(), "persist.db")
+	h1 := newFeedbackHarnessAtPath(t, path, true)
 
 	detail := createPublishedSurvey(t, h1, fxEndedActivityID)
 	if _, err := h1.svc.Submit(fxEndedActivityID, fxCheckedID, validAnswers(detail)); err != nil {
 		t.Fatalf("提交失败: %v", err)
 	}
-	sqlDB, _ := db.DB()
+	sqlDB, _ := h1.db.DB()
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
 
-	// 重新连接：数据来自持久化存储而非内存状态
-	h2 := newFeedbackHarnessAtPath(t, dbPath)
+	// 重新连接：数据来自持久化存储而非内存状态（不重新播种）。
+	h2 := newFeedbackHarnessAtPath(t, path, false)
 	got, err := h2.svc.GetForParticipant(fxEndedActivityID, fxCheckedID)
 	if err != nil {
 		t.Fatalf("重连后问卷应仍可查询: %v", err)
@@ -690,18 +746,4 @@ func TestFeedbackPersistenceAcrossConnections(t *testing.T) {
 	if _, err := h2.svc.Submit(fxEndedActivityID, fxCheckedID, validAnswers(detail)); appCode(t, err) != constants.CodeSurveySubmitted {
 		t.Fatalf("重连后重复提交仍应被拒绝, got %d", appCode(t, err))
 	}
-}
-
-// newFeedbackHarnessAtPath 基于已播种数据的指定数据库构造服务（用于持久化测试）。
-func newFeedbackHarnessAtPath(t *testing.T, dbPath string) *feedbackHarness {
-	t.Helper()
-	db := openFeedbackDBAt(t, dbPath)
-	logger := discardLogger()
-	actRepo := repository.NewActivityRepository(db)
-	regRepo := repository.NewRegistrationRepository(db)
-	fbRepo := repository.NewFeedbackRepository(db)
-	notifyRepo := repository.NewNotificationRepository(db)
-	checkinRepo := repository.NewCheckInRecordRepository(db)
-	actSvc := NewActivityService(actRepo, regRepo, notifyRepo, checkinRepo, logger)
-	return &feedbackHarness{db: db, svc: NewFeedbackService(db, fbRepo, actSvc, regRepo, logger)}
 }
